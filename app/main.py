@@ -11,8 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[  # frontend prod
-        "http://localhost:5173"           # dev Vite
+    allow_origins=[
+        "https://lavatools-web.fly.dev",
     ],
     allow_credentials=True,
     allow_methods=["*"],
