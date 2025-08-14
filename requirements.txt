@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.5
+python-multipart==0.0.9
+markdownify==0.13.1
+mammoth==1.8.0
+pydantic==2.8.2
+pypandoc==1.13
