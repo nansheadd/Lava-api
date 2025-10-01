@@ -3,13 +3,20 @@ from __future__ import annotations
 
 import traceback
 
+from typing import Optional
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 import os
 
 
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+import requests
+from requests import RequestException
+from urllib.parse import urljoin, urlparse
 
 from .converters import docx_to_markdown_and_html
 from .wordpress_client import (
@@ -57,6 +64,82 @@ class WordPressSubscriptionsResponse(BaseModel):
     base_url: str
     admin_path: str
     html: str
+
+
+class WordPressCredentials(BaseModel):
+    site_url: Optional[str] = Field(None, alias="siteUrl")
+    url: Optional[str] = None
+    base_url: Optional[str] = Field(None, alias="baseUrl")
+    username: Optional[str] = None
+    user: Optional[str] = None
+    application_password: Optional[str] = Field(None, alias="applicationPassword")
+    password: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def normalised_base_url(self) -> str:
+        for candidate in (self.base_url, self.site_url, self.url):
+            if candidate:
+                return _normalise_base_url(candidate)
+        raise ValueError("Merci de renseigner l'URL de votre site WordPress.")
+
+    def resolved_username(self) -> str:
+        username = self.username or self.user
+        if not username:
+            raise ValueError("Merci de renseigner l'identifiant WordPress.")
+        return username
+
+    def resolved_password(self) -> str:
+        password = self.application_password or self.password
+        if not password:
+            raise ValueError("Merci de renseigner le mot de passe/application password WordPress.")
+        return password
+
+
+class WordPressConnectRequest(WordPressCredentials):
+    pass
+
+
+class WordPressConnectResponse(BaseModel):
+    success: bool
+    message: Optional[str] = None
+    username: Optional[str] = None
+    display_name: Optional[str] = Field(None, alias="displayName")
+    url: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WordPressPublishRequest(WordPressCredentials):
+    title: Optional[str] = None
+    slug: Optional[str] = None
+    status: str = "draft"
+    markdown: Optional[str] = None
+    html: Optional[str] = None
+    content: Optional[str] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        value = value or "draft"
+        allowed = {"draft", "publish"}
+        if value not in allowed:
+            raise ValueError(
+                "Le statut WordPress doit être 'draft' ou 'publish'."
+            )
+        return value
+
+
+class WordPressPublishResponse(BaseModel):
+    success: bool
+    message: Optional[str] = None
+    link: Optional[str] = None
+    url: Optional[str] = None
+    permalink: Optional[str] = None
+    post_id: Optional[int] = Field(None, alias="postId")
+    status: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 @app.get("/health")
@@ -118,3 +201,171 @@ async def wordpress_subscriptions(
         admin_path=subscriptions_path,
         html=html,
     )
+
+
+def _normalise_base_url(raw_url: str) -> str:
+    raw_url = raw_url.strip()
+    if not raw_url:
+        raise ValueError("Merci de renseigner l'URL de votre site WordPress.")
+
+    parsed = urlparse(raw_url)
+    if not parsed.scheme:
+        raw_url = f"https://{raw_url}"
+        parsed = urlparse(raw_url)
+
+    if not parsed.netloc:
+        raise ValueError(
+            "L'URL fournie n'est pas valide. Exemple attendu: https://monsite.com"
+        )
+
+    if not raw_url.endswith("/"):
+        raw_url = f"{raw_url}/"
+
+    return raw_url
+
+
+def _wordpress_error(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"success": False, "message": message, "error": message},
+    )
+
+
+def _parse_wordpress_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text or "La requête WordPress a échoué."
+
+    if isinstance(payload, dict):
+        return (
+            payload.get("message")
+            or payload.get("error")
+            or payload.get("detail")
+            or "La requête WordPress a échoué."
+        )
+    return "La requête WordPress a échoué."
+
+
+def _wordpress_auth_request(
+    method: str,
+    url: str,
+    username: str,
+    password: str,
+    *,
+    json_payload: Optional[dict] = None,
+) -> requests.Response:
+    try:
+        response = requests.request(
+            method,
+            url,
+            auth=(username, password),
+            json=json_payload,
+            timeout=15,
+            headers={"Accept": "application/json"},
+        )
+    except RequestException as exc:  # pragma: no cover - network failure
+        raise HTTPException(
+            status_code=502,
+            detail=f"Connexion à WordPress impossible: {exc}",
+        ) from exc
+    return response
+
+
+@app.post("/wordpress/connect", response_model=WordPressConnectResponse)
+def wordpress_connect(payload: WordPressConnectRequest):
+    try:
+        base_url = payload.normalised_base_url()
+        username = payload.resolved_username()
+        password = payload.resolved_password()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    api_url = urljoin(base_url, "wp-json/wp/v2/users/me")
+    response = _wordpress_auth_request("GET", api_url, username, password)
+
+    if response.status_code == 200:
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+
+        display_name = None
+        if isinstance(data, dict):
+            display_name = data.get("name") or data.get("slug")
+
+        message = (
+            f"Connexion réussie à WordPress pour l'utilisateur {display_name or username}."
+        )
+        site_url = base_url.rstrip("/")
+        return WordPressConnectResponse(
+            success=True,
+            message=message,
+            username=username,
+            display_name=display_name,
+            url=site_url,
+        )
+
+    error_message = _parse_wordpress_error(response)
+    return _wordpress_error(response.status_code, error_message)
+
+
+@app.post("/wordpress/publish", response_model=WordPressPublishResponse)
+def wordpress_publish(payload: WordPressPublishRequest):
+    try:
+        base_url = payload.normalised_base_url()
+        username = payload.resolved_username()
+        password = payload.resolved_password()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    content = payload.html or payload.content or payload.markdown
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Merci de fournir du contenu (HTML ou Markdown) à publier.",
+        )
+
+    post_payload = {
+        "title": payload.title or "",
+        "status": payload.status,
+        "content": content,
+    }
+
+    if payload.slug:
+        post_payload["slug"] = payload.slug
+
+    posts_url = urljoin(base_url, "wp-json/wp/v2/posts")
+    response = _wordpress_auth_request(
+        "POST", posts_url, username, password, json_payload=post_payload
+    )
+
+    if response.status_code in {200, 201}:
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+
+        link = None
+        permalink = None
+        status = None
+        post_id = None
+        if isinstance(data, dict):
+            link = data.get("link")
+            permalink = data.get("permalink") or link
+            status = data.get("status")
+            post_id = data.get("id")
+
+        message = "Article publié avec succès sur WordPress."
+        return WordPressPublishResponse(
+            success=True,
+            message=message,
+            link=link or permalink,
+            url=link or permalink,
+            permalink=permalink,
+            post_id=post_id,
+            status=status,
+        )
+
+    error_message = _parse_wordpress_error(response)
+    return _wordpress_error(response.status_code, error_message)
