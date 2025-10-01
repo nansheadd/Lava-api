@@ -55,6 +55,22 @@ class WordPressClient:
         if self.session is None:
             self.session = requests.Session()
 
+        # Some hosting providers apply additional security checks based on the
+        # ``User-Agent`` header.  When ``requests`` uses its default value the
+        # login flow can be rejected with an interstitial page that shows the
+        # "You are now logging in to WordPress" message.  Spoof a modern
+        # browser UA to ensure WordPress treats the session like a real user
+        # agent.  Users can still override the header on the provided session
+        # when necessary.
+        self.session.headers.setdefault(
+            "User-Agent",
+            (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        )
+
         parsed = urlparse(self.base_url)
         if not parsed.scheme or not parsed.netloc:
             raise ValueError(
@@ -131,7 +147,9 @@ class WordPressClient:
             )
 
         # Follow the redirect to ensure the session has proper admin cookies.
-        admin_response = self.session.get(location or urljoin(self.base_url, "wp-admin/"))
+        admin_destination = location or urljoin(self.base_url, "wp-admin/")
+        admin_url = urljoin(self.base_url, admin_destination)
+        admin_response = self.session.get(admin_url)
         admin_response.raise_for_status()
 
     def fetch_admin_page(self, path: str) -> str:
