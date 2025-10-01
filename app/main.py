@@ -20,11 +20,11 @@ from requests import RequestException
 from urllib.parse import urljoin, urlparse
 
 from .converters import docx_to_markdown_and_html
+from .playwright_exporter import export_subscriptions_csv_with_playwright
 from .wordpress_client import (
     WordPressAuthenticationError,
     WordPressClient,
     WordPressExportError,
-    export_subscriptions_csv,
     fetch_subscriptions_page,
 )
 
@@ -249,22 +249,15 @@ async def wordpress_subscriptions_export(
     client = WordPressClient(base_url)
 
     try:
-        content, filename, content_type = export_subscriptions_csv(
+        content, filename, content_type = export_subscriptions_csv_with_playwright(
             base_url=client.base_url,
             username=username,
             password=password,
-            client=client,
         )
     except WordPressAuthenticationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except WordPressExportError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except requests.HTTPError as exc:  # pragma: no cover - network failure details
-        status_code = exc.response.status_code if exc.response else 502
-        raise HTTPException(
-            status_code=status_code,
-            detail="L'export WooCommerce a échoué.",
-        ) from exc
 
     encoded = base64.b64encode(content).decode("ascii")
     return WordPressSubscriptionsExportResponse(
