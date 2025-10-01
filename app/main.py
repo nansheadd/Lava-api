@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+import base64
 import requests
 from requests import RequestException
 from urllib.parse import urljoin, urlparse
@@ -22,6 +23,8 @@ from .converters import docx_to_markdown_and_html
 from .wordpress_client import (
     WordPressAuthenticationError,
     WordPressClient,
+    WordPressExportError,
+    export_subscriptions_csv,
     fetch_subscriptions_page,
 )
 
@@ -64,6 +67,18 @@ class WordPressSubscriptionsResponse(BaseModel):
     base_url: str
     admin_path: str
     html: str
+
+
+class WordPressSubscriptionsExportRequest(WordPressCredentials):
+    pass
+
+
+class WordPressSubscriptionsExportResponse(BaseModel):
+    filename: Optional[str] = None
+    content_type: Optional[str] = Field(None, alias="contentType")
+    data: str
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class WordPressCredentials(BaseModel):
@@ -200,6 +215,49 @@ async def wordpress_subscriptions(
         base_url=client.base_url,
         admin_path=subscriptions_path,
         html=html,
+    )
+
+
+@app.post(
+    "/wordpress/subscriptions/export",
+    response_model=WordPressSubscriptionsExportResponse,
+    summary="Export WooCommerce subscriptions as a CSV file.",
+)
+async def wordpress_subscriptions_export(
+    payload: WordPressSubscriptionsExportRequest,
+) -> WordPressSubscriptionsExportResponse:
+    try:
+        base_url = payload.normalised_base_url()
+        username = payload.resolved_username()
+        password = payload.resolved_password()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    client = WordPressClient(base_url)
+
+    try:
+        content, filename, content_type = export_subscriptions_csv(
+            base_url=client.base_url,
+            username=username,
+            password=password,
+            client=client,
+        )
+    except WordPressAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except WordPressExportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except requests.HTTPError as exc:  # pragma: no cover - network failure details
+        status_code = exc.response.status_code if exc.response else 502
+        raise HTTPException(
+            status_code=status_code,
+            detail="L'export WooCommerce a échoué.",
+        ) from exc
+
+    encoded = base64.b64encode(content).decode("ascii")
+    return WordPressSubscriptionsExportResponse(
+        filename=filename,
+        content_type=content_type,
+        data=encoded,
     )
 
 

@@ -20,14 +20,19 @@ permission issues without having to inspect raw HTTP responses manually.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-from urllib.parse import urljoin, urlparse
+from typing import Optional, Tuple
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from bs4 import BeautifulSoup
 
 
 class WordPressAuthenticationError(RuntimeError):
     """Raised when the WordPress login flow cannot be completed."""
+
+
+class WordPressExportError(RuntimeError):
+    """Raised when the WooCommerce export flow cannot be completed."""
 
 
 @dataclass
@@ -176,9 +181,157 @@ def fetch_subscriptions_page(
     return client.fetch_admin_page(subscriptions_path)
 
 
+def export_subscriptions_csv(
+    base_url: str,
+    username: str,
+    password: str,
+    *,
+    client: Optional[WordPressClient] = None,
+) -> Tuple[bytes, Optional[str], Optional[str]]:
+    """Trigger the WooCommerce subscriptions export and return the CSV bytes."""
+
+    if client is None:
+        client = WordPressClient(base_url)
+
+    client.login(username, password)
+
+    subscriptions_path = (
+        "wp-admin/admin.php?page=wf_subscriptions_csv_im_ex&tab=subscriptions"
+    )
+    page_url = urljoin(client.base_url, subscriptions_path)
+    html = client.fetch_admin_page(subscriptions_path)
+
+    action_url, payload = _prepare_export_request(html, page_url)
+
+    response = client.session.post(
+        action_url,
+        data=payload,
+        headers={"Referer": page_url},
+        stream=True,
+    )
+    response.raise_for_status()
+
+    filename = _extract_filename(response.headers.get("Content-Disposition", ""))
+    content_type = response.headers.get("Content-Type")
+    return response.content, filename, content_type
+
+
+def _prepare_export_request(html: str, page_url: str) -> Tuple[str, dict]:
+    soup = BeautifulSoup(html, "lxml")
+
+    for form in soup.find_all("form"):
+        submit = _find_export_button(form)
+        if submit is None:
+            continue
+
+        action = form.get("action") or page_url
+        action_url = urljoin(page_url, action)
+        payload = _extract_form_fields(form, submit)
+        return action_url, payload
+
+    raise WordPressExportError(
+        "Impossible de trouver le formulaire d'export dans la page WordPress."
+    )
+
+
+def _find_export_button(form):
+    candidates = []
+    candidates.extend(form.find_all("input", attrs={"type": "submit"}))
+    candidates.extend(form.find_all("button"))
+
+    for candidate in candidates:
+        label = ""
+        if candidate.name == "input":
+            label = candidate.get("value", "")
+        else:
+            label = candidate.get_text(strip=True)
+
+        name = candidate.get("name", "")
+        identifier = " ".join(filter(None, [label, name])).lower()
+        if "export" in identifier:
+            return candidate
+
+    return None
+
+
+def _extract_form_fields(form, submit_button) -> dict:
+    data = {}
+
+    for input_tag in form.find_all("input"):
+        name = input_tag.get("name")
+        if not name:
+            continue
+
+        input_type = (input_tag.get("type") or "").lower()
+
+        if input_tag is submit_button:
+            data[name] = input_tag.get("value", "")
+            continue
+
+        if input_type in {"submit", "button", "image"}:
+            continue
+
+        if input_type in {"checkbox", "radio"}:
+            if input_tag.has_attr("checked"):
+                data[name] = input_tag.get("value", "on")
+            continue
+
+        if input_type == "file":
+            continue
+
+        data[name] = input_tag.get("value", "")
+
+    if submit_button.name == "button":
+        name = submit_button.get("name")
+        if name:
+            data[name] = (
+                submit_button.get("value") or submit_button.get_text(strip=True)
+            )
+
+    for textarea in form.find_all("textarea"):
+        name = textarea.get("name")
+        if name and name not in data:
+            data[name] = textarea.text or ""
+
+    for select in form.find_all("select"):
+        name = select.get("name")
+        if not name or name in data:
+            continue
+
+        option = select.find("option", selected=True)
+        if option is None:
+            option = select.find("option")
+
+        if option is not None:
+            data[name] = option.get("value") or option.get_text(strip=True)
+
+    return data
+
+
+def _extract_filename(content_disposition: str) -> Optional[str]:
+    if not content_disposition:
+        return None
+
+    parts = [part.strip() for part in content_disposition.split(";")]
+
+    for part in parts:
+        if part.lower().startswith("filename*="):
+            _, value = part.split("=", 1)
+            if "''" in value:
+                _, value = value.split("''", 1)
+            return unquote(value.strip('"'))
+        if part.lower().startswith("filename="):
+            _, value = part.split("=", 1)
+            return value.strip('"')
+
+    return None
+
+
 __all__ = [
     "WordPressClient",
     "WordPressAuthenticationError",
     "fetch_subscriptions_page",
+    "export_subscriptions_csv",
+    "WordPressExportError",
 ]
 
