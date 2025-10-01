@@ -99,10 +99,17 @@ class WordPressCredentials(BaseModel):
         return password
 
     def resolved_admin_password(self) -> str:
-        password = self.password or self.application_password
-        if not password:
-            raise ValueError("Merci de renseigner le mot de passe/application password WordPress.")
-        return password
+        if self.password:
+            return self.password
+
+        if self.application_password:
+            raise ValueError(
+                "L'export nécessite votre mot de passe WordPress habituel. "
+                "Les application passwords ne permettent pas de se connecter "
+                "à l'interface d'administration."
+            )
+
+        raise ValueError("Merci de renseigner le mot de passe WordPress.")
 
 
 class WordPressConnectRequest(WordPressCredentials):
