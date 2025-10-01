@@ -151,7 +151,12 @@ class WordPressClient:
         return response.text
 
 
-def fetch_subscriptions_page(base_url: str, username: str, password: str) -> str:
+def fetch_subscriptions_page(
+    base_url: str,
+    username: str,
+    password: str,
+    client: Optional[WordPressClient] = None,
+) -> str:
     """Convenience helper that logs in and returns the WooCommerce page HTML.
 
     This helper is tailored for the "WooCommerce → Import Export Suite →
@@ -160,7 +165,9 @@ def fetch_subscriptions_page(base_url: str, username: str, password: str) -> str
     Import Export Suite.
     """
 
-    client = WordPressClient(base_url)
+    if client is None:
+        client = WordPressClient(base_url)
+
     client.login(username, password)
 
     subscriptions_path = (
