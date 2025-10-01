@@ -282,10 +282,22 @@ def _normalise_base_url(raw_url: str) -> str:
             "L'URL fournie n'est pas valide. Exemple attendu: https://monsite.com"
         )
 
-    if not raw_url.endswith("/"):
-        raw_url = f"{raw_url}/"
+    path = parsed.path or "/"
+    lowered = path.lower()
 
-    return raw_url
+    admin_markers = ("/wp-admin", "/wp-login.php")
+    for marker in admin_markers:
+        idx = lowered.find(marker)
+        if idx != -1:
+            path = path[:idx] or "/"
+            lowered = path.lower()
+            break
+
+    if not path.endswith("/"):
+        path = f"{path}/"
+
+    normalised = parsed._replace(path=path, params="", query="", fragment="")
+    return normalised.geturl()
 
 
 def _wordpress_error(status_code: int, message: str) -> JSONResponse:
