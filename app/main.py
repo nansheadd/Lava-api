@@ -92,8 +92,14 @@ class WordPressCredentials(BaseModel):
             raise ValueError("Merci de renseigner l'identifiant WordPress.")
         return username
 
-    def resolved_password(self) -> str:
+    def resolved_api_password(self) -> str:
         password = self.application_password or self.password
+        if not password:
+            raise ValueError("Merci de renseigner le mot de passe/application password WordPress.")
+        return password
+
+    def resolved_admin_password(self) -> str:
+        password = self.password or self.application_password
         if not password:
             raise ValueError("Merci de renseigner le mot de passe/application password WordPress.")
         return password
@@ -229,7 +235,7 @@ async def wordpress_subscriptions_export(
     try:
         base_url = payload.normalised_base_url()
         username = payload.resolved_username()
-        password = payload.resolved_password()
+        password = payload.resolved_admin_password()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -335,7 +341,7 @@ def wordpress_connect(payload: WordPressConnectRequest):
     try:
         base_url = payload.normalised_base_url()
         username = payload.resolved_username()
-        password = payload.resolved_password()
+        password = payload.resolved_api_password()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -373,7 +379,7 @@ def wordpress_publish(payload: WordPressPublishRequest):
     try:
         base_url = payload.normalised_base_url()
         username = payload.resolved_username()
-        password = payload.resolved_password()
+        password = payload.resolved_api_password()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
