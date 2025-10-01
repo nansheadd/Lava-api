@@ -1,5 +1,8 @@
 from __future__ import annotations
+
+import os
 import traceback
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,13 +10,19 @@ from .converters import docx_to_markdown_and_html
 
 app = FastAPI(title="LavaTools", version="0.1.0")
 
-from fastapi.middleware.cors import CORSMiddleware
+_allowed_origins = os.getenv("ALLOWED_ORIGINS")
+if _allowed_origins:
+    allow_origins = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
+else:
+    allow_origins = [
+        "https://lavatools-web.fly.dev",  # frontend prod
+        "http://localhost:5173",  # local dev
+        "http://127.0.0.1:5173",  # local dev loopback
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://lavatools-web.fly.dev",  # frontend prod
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
