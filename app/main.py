@@ -69,18 +69,6 @@ class WordPressSubscriptionsResponse(BaseModel):
     html: str
 
 
-class WordPressSubscriptionsExportRequest(WordPressCredentials):
-    pass
-
-
-class WordPressSubscriptionsExportResponse(BaseModel):
-    filename: Optional[str] = None
-    content_type: Optional[str] = Field(None, alias="contentType")
-    data: str
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
 class WordPressCredentials(BaseModel):
     site_url: Optional[str] = Field(None, alias="siteUrl")
     url: Optional[str] = None
@@ -153,6 +141,18 @@ class WordPressPublishResponse(BaseModel):
     permalink: Optional[str] = None
     post_id: Optional[int] = Field(None, alias="postId")
     status: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WordPressSubscriptionsExportRequest(WordPressCredentials):
+    pass
+
+
+class WordPressSubscriptionsExportResponse(BaseModel):
+    filename: Optional[str] = None
+    content_type: Optional[str] = Field(None, alias="contentType")
+    data: str
 
     model_config = ConfigDict(populate_by_name=True)
 
