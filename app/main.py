@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+
 import traceback
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+
+import os
+
+
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -15,11 +20,20 @@ from .wordpress_client import (
 
 app = FastAPI(title="LavaTools", version="0.1.0")
 
+
+_allowed_origins = os.getenv("ALLOWED_ORIGINS")
+if _allowed_origins:
+    allow_origins = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
+else:
+    allow_origins = [
+        "https://lavatools-web.fly.dev",  # frontend prod
+        "http://localhost:5173",  # local dev
+        "http://127.0.0.1:5173",  # local dev loopback
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://lavatools-web.fly.dev",  # frontend prod
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
