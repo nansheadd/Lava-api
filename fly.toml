@@ -1,51 +1,20 @@
-# fly.toml — backend API (FastAPI + WebSocket + Selenium)
-app = "lavatools-api"
-primary_region = "ams"
+FROM python:3.11-slim
+WORKDIR /app
 
-[build]
-  dockerfile = "Dockerfile"
+# Paquets système nécessaires (curl/unzip utiles pour debug/télémétrie)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/*
 
-[env]
-  # Uvicorn écoute sur ce port (assure-toi d'utiliser la shell form dans le Dockerfile)
-  PORT = "8080"
+# Dépendances Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-  # CORS autorisés (ajoute d'autres origines si besoin)
-  ALLOWED_ORIGINS = "https://lavatools-web.fly.dev,http://localhost:5173,http://127.0.0.1:5173"
+# Code
+COPY app ./app
 
-  # 🔧 Aide Firefox/Gecko en VM (réduit les soucis de sandbox)
-  MOZ_DISABLE_CONTENT_SANDBOX = "1"
-  MOZ_HEADLESS = "1"
+# IMPORTANT: Fly enverra le trafic sur $PORT (fly.toml=8080)
+EXPOSE 8080
 
-[http_service]
-  internal_port = 8080
-  force_https = true
-
-  # ✅ garde une machine allumée pour éviter les cold starts pendant le WS
-  auto_start_machines = true
-  auto_stop_machines = false
-  min_machines_running = 1
-
-  processes = ["app"]
-
-  [http_service.concurrency]
-    type = "requests"
-    soft_limit = 25
-    hard_limit = 50
-
-  # Healthcheck HTTP; plus de marge au boot
-  [[http_service.checks]]
-    method = "GET"
-    path = "/health"
-    interval = "10s"
-    timeout = "5s"
-    grace_period = "90s"
-
-# 💾 un peu de swap pour amortir les pics (Firefox peut monter)
-[init]
-  swap_size_mb = 512
-
-# 🧠 plus de RAM (1gb était trop juste pour Firefox + FastAPI)
-[[vm]]
-  memory = "2gb"
-  cpu_kind = "shared"
-  cpus = 1
+# 🔑 Utilise la shell-form pour que ${PORT} soit interpolé par le shell
+CMD sh -c 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}'
