@@ -1,4 +1,4 @@
-# fly.toml — backend API (FastAPI + WebSocket)
+# fly.toml — backend API (FastAPI + WebSocket + Selenium)
 app = "lavatools-api"
 primary_region = "ams"
 
@@ -6,20 +6,21 @@ primary_region = "ams"
   dockerfile = "Dockerfile"
 
 [env]
-  # Uvicorn écoutera sur ce port (assure-toi que ton Dockerfile lance: uvicorn ... --port ${PORT:-8080})
+  # Uvicorn écoute sur ce port (assure-toi d'utiliser la shell form dans le Dockerfile)
   PORT = "8080"
 
-  # CORS autorisés (tu peux ajouter d'autres origines séparées par des virgules)
+  # CORS autorisés (ajoute d'autres origines si besoin)
   ALLOWED_ORIGINS = "https://lavatools-web.fly.dev,http://localhost:5173,http://127.0.0.1:5173"
 
-  # Optionnel: mets "1" temporairement pour autoriser tout en dev
-  # CORS_ALLOW_ALL = "0"
+  # 🔧 Aide Firefox/Gecko en VM (réduit les soucis de sandbox)
+  MOZ_DISABLE_CONTENT_SANDBOX = "1"
+  MOZ_HEADLESS = "1"
 
 [http_service]
   internal_port = 8080
   force_https = true
 
-  # ⭐ Garde au moins une machine allumée pour éviter les cold starts pendant l’ouverture WebSocket
+  # ✅ garde une machine allumée pour éviter les cold starts pendant le WS
   auto_start_machines = true
   auto_stop_machines = false
   min_machines_running = 1
@@ -31,16 +32,20 @@ primary_region = "ams"
     soft_limit = 25
     hard_limit = 50
 
-  # Healthcheck HTTP sur /health (donne un peu de marge au boot)
+  # Healthcheck HTTP; plus de marge au boot
   [[http_service.checks]]
     method = "GET"
     path = "/health"
     interval = "10s"
     timeout = "5s"
-    grace_period = "60s"
+    grace_period = "90s"
 
-# Gabarit VM (tu peux augmenter si besoin)
+# 💾 un peu de swap pour amortir les pics (Firefox peut monter)
+[init]
+  swap_size_mb = 512
+
+# 🧠 plus de RAM (1gb était trop juste pour Firefox + FastAPI)
 [[vm]]
-  memory = "1gb"
+  memory = "2gb"
   cpu_kind = "shared"
   cpus = 1
