@@ -1,4 +1,4 @@
-# fly.toml
+# fly.toml — backend API (FastAPI + WebSocket)
 app = "lavatools-api"
 primary_region = "ams"
 
@@ -6,27 +6,41 @@ primary_region = "ams"
   dockerfile = "Dockerfile"
 
 [env]
+  # Uvicorn écoutera sur ce port (assure-toi que ton Dockerfile lance: uvicorn ... --port ${PORT:-8080})
   PORT = "8080"
-  # active en dev si tu veux tout autoriser le temps de tester
-  # CORS_ALLOW_ALL = "1"
+
+  # CORS autorisés (tu peux ajouter d'autres origines séparées par des virgules)
   ALLOWED_ORIGINS = "https://lavatools-web.fly.dev,http://localhost:5173,http://127.0.0.1:5173"
+
+  # Optionnel: mets "1" temporairement pour autoriser tout en dev
+  # CORS_ALLOW_ALL = "0"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = true
+
+  # ⭐ Garde au moins une machine allumée pour éviter les cold starts pendant l’ouverture WebSocket
   auto_start_machines = true
+  auto_stop_machines = false
   min_machines_running = 1
+
   processes = ["app"]
 
   [http_service.concurrency]
     type = "requests"
-    hard_limit = 50
     soft_limit = 25
+    hard_limit = 50
 
+  # Healthcheck HTTP sur /health (donne un peu de marge au boot)
   [[http_service.checks]]
-    interval = "10s"
-    timeout = "2s"
-    grace_period = "30s"
     method = "GET"
     path = "/health"
+    interval = "10s"
+    timeout = "5s"
+    grace_period = "60s"
+
+# Gabarit VM (tu peux augmenter si besoin)
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
