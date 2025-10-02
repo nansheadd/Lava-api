@@ -1,29 +1,32 @@
-# Python slim + Firefox/Chrome headless ready
-FROM python:3.11-slim
+# fly.toml
+app = "lavatools-api"
+primary_region = "ams"
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+[build]
+  dockerfile = "Dockerfile"
 
-# System deps (Firefox ESR + fonts; Chrome is optional)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    firefox-esr \
-    libgtk-3-0 libdbus-glib-1-2 libxt6 libx11-xcb1 libxcb-dri3-0 libxdamage1 libgbm1 \
-    fonts-liberation fonts-dejavu-core ca-certificates curl gnupg \
- && rm -rf /var/lib/apt/lists/*
+[env]
+  PORT = "8080"
+  # active en dev si tu veux tout autoriser le temps de tester
+  # CORS_ALLOW_ALL = "1"
+  ALLOWED_ORIGINS = "https://lavatools-web.fly.dev,http://localhost:5173,http://127.0.0.1:5173"
 
-# (Optionnel) Installer Chromium à la place
-# RUN apt-get update && apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
 
-WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
 
-COPY app ./app
-
-# Vars par défaut
-ENV SELENIUM_BROWSER=firefox \
-    SELENIUM_HEADLESS=1 \
-    ALLOWED_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
-
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "2s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health"

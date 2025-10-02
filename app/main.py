@@ -41,24 +41,24 @@ def _env_flag(name: str, default: bool) -> bool:
 _DEFAULT_SELENIUM_BROWSER = os.getenv("SELENIUM_BROWSER", "firefox")
 _DEFAULT_SELENIUM_HEADLESS = _env_flag("SELENIUM_HEADLESS", True)
 
-_allowed_origins = os.getenv("ALLOWED_ORIGINS")
-if _allowed_origins:
-    allow_origins = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
+allow_all = os.getenv("CORS_ALLOW_ALL") == "1"
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "")
+
+if allow_all:
+    allow_origins = ["*"]
 else:
-    allow_origins = [
-        "https://lavatools-web.fly.dev",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
+    if _allowed_origins:
+        allow_origins = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
+    else:
+        allow_origins = ["https://lavatools-web.fly.dev", "http://localhost:5173", "http://127.0.0.1:5173"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # -----------------------------------------------------------------------------
 # Schemas
