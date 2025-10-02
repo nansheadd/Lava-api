@@ -1,71 +1,68 @@
 from __future__ import annotations
 
-
-import traceback
-
-from typing import Optional
-
-from fastapi import FastAPI, File, HTTPException, UploadFile
-
+import asyncio
+import base64
 import os
+import traceback
+from typing import Optional
+from urllib.parse import urljoin
 
-
+import requests
+from requests import RequestException
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-import base64
-import requests
-from requests import RequestException
-from urllib.parse import urljoin, urlparse
-
 from .converters import docx_to_markdown_and_html
-from .wordpress_client import (
-    WordPressAuthenticationError,
-    WordPressClient,
-    WordPressExportError,
-    fetch_subscriptions_page,
-)
+from .selenium_exporter import export_subscriptions_csv_with_selenium
+from .wordpress_client import normalise_base_url
 
-app = FastAPI(title="LavaTools", version="0.1.0")
+
+# -----------------------------------------------------------------------------
+# App & config
+# -----------------------------------------------------------------------------
+
+app = FastAPI(title="LavaTools", version="1.1.0")
 
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-
-    value = value.strip().lower()
-    if value in {"", "1", "true", "yes", "on"}:
+    v = value.strip().lower()
+    if v in {"", "1", "true", "yes", "on"}:
         return True
-    if value in {"0", "false", "no", "off"}:
+    if v in {"0", "false", "no", "off"}:
         return False
-
     return default
 
 
-_DEFAULT_SELENIUM_BROWSER = os.getenv("SELENIUM_BROWSER", "chromium")
+_DEFAULT_SELENIUM_BROWSER = os.getenv("SELENIUM_BROWSER", "firefox")
 _DEFAULT_SELENIUM_HEADLESS = _env_flag("SELENIUM_HEADLESS", True)
-
 
 _allowed_origins = os.getenv("ALLOWED_ORIGINS")
 if _allowed_origins:
-    allow_origins = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
+    allow_origins = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 else:
     allow_origins = [
-        "https://lavatools-web.fly.dev",  # frontend prod
-        "http://localhost:5173",  # local dev
-        "http://127.0.0.1:5173",  # local dev loopback
+        "https://lavatools-web.fly.dev",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# -----------------------------------------------------------------------------
+# Schemas
+# -----------------------------------------------------------------------------
 
 class ConvertResponse(BaseModel):
     markdown: str
@@ -74,19 +71,7 @@ class ConvertResponse(BaseModel):
     stats: dict
 
 
-class WordPressSubscriptionsRequest(BaseModel):
-    base_url: str
-    username: str
-    password: str
-
-
-class WordPressSubscriptionsResponse(BaseModel):
-    base_url: str
-    admin_path: str
-    html: str
-
-
-class WordPressCredentials(BaseModel):
+class WordPressConnectRequest(BaseModel):
     site_url: Optional[str] = Field(None, alias="siteUrl")
     url: Optional[str] = None
     base_url: Optional[str] = Field(None, alias="baseUrl")
@@ -100,37 +85,20 @@ class WordPressCredentials(BaseModel):
     def normalised_base_url(self) -> str:
         for candidate in (self.base_url, self.site_url, self.url):
             if candidate:
-                return _normalise_base_url(candidate)
+                return normalise_base_url(candidate)
         raise ValueError("Merci de renseigner l'URL de votre site WordPress.")
 
     def resolved_username(self) -> str:
-        username = self.username or self.user
-        if not username:
+        u = self.username or self.user
+        if not u:
             raise ValueError("Merci de renseigner l'identifiant WordPress.")
-        return username
+        return u
 
     def resolved_api_password(self) -> str:
-        password = self.application_password or self.password
-        if not password:
-            raise ValueError("Merci de renseigner le mot de passe/application password WordPress.")
-        return password
-
-    def resolved_admin_password(self) -> str:
-        if self.password:
-            return self.password
-
-        if self.application_password:
-            raise ValueError(
-                "L'export nécessite votre mot de passe WordPress habituel. "
-                "Les application passwords ne permettent pas de se connecter "
-                "à l'interface d'administration."
-            )
-
-        raise ValueError("Merci de renseigner le mot de passe WordPress.")
-
-
-class WordPressConnectRequest(WordPressCredentials):
-    pass
+        pw = self.application_password or self.password
+        if not pw:
+            raise ValueError("Merci de renseigner un Application Password ou mot de passe WordPress.")
+        return pw
 
 
 class WordPressConnectResponse(BaseModel):
@@ -143,7 +111,7 @@ class WordPressConnectResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class WordPressPublishRequest(WordPressCredentials):
+class WordPressPublishRequest(WordPressConnectRequest):
     title: Optional[str] = None
     slug: Optional[str] = None
     status: str = "draft"
@@ -155,11 +123,8 @@ class WordPressPublishRequest(WordPressCredentials):
     @classmethod
     def validate_status(cls, value: str) -> str:
         value = value or "draft"
-        allowed = {"draft", "publish"}
-        if value not in allowed:
-            raise ValueError(
-                "Le statut WordPress doit être 'draft' ou 'publish'."
-            )
+        if value not in {"draft", "publish"}:
+            raise ValueError("Le statut WordPress doit être 'draft' ou 'publish'.")
         return value
 
 
@@ -175,7 +140,47 @@ class WordPressPublishResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class WordPressSubscriptionsExportRequest(WordPressCredentials):
+class WordPressAdminCreds(BaseModel):
+    site_url: Optional[str] = Field(None, alias="siteUrl")
+    url: Optional[str] = None
+    base_url: Optional[str] = Field(None, alias="baseUrl")
+    username: Optional[str] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def normalised_base_url(self) -> str:
+        for candidate in (self.base_url, self.site_url, self.url):
+            if candidate:
+                return normalise_base_url(candidate)
+        raise ValueError("Merci de renseigner l'URL de votre site WordPress.")
+
+    def resolved_username(self) -> str:
+        u = self.username or self.user
+        if not u:
+            raise ValueError("Merci de renseigner l'identifiant WordPress.")
+        return u
+
+    def resolved_admin_password(self) -> str:
+        if not self.password:
+            raise ValueError("Merci de renseigner le mot de passe WordPress.")
+        return self.password
+
+
+class WordPressSubscriptionsRequest(WordPressAdminCreds):
+    pass
+
+
+class WordPressSubscriptionsResponse(BaseModel):
+    base_url: str = Field(..., alias="baseUrl")
+    admin_path: str = Field(..., alias="adminPath")
+    html: str = ""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WordPressSubscriptionsExportRequest(WordPressAdminCreds):
     browser: Optional[str] = None
     headless: Optional[bool] = None
 
@@ -187,6 +192,53 @@ class WordPressSubscriptionsExportResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+
+# -----------------------------------------------------------------------------
+# Helpers HTTP WordPress
+# -----------------------------------------------------------------------------
+
+def _wordpress_error(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"success": False, "message": message, "error": message},
+    )
+
+
+def _wordpress_auth_request(
+    method: str,
+    url: str,
+    username: str,
+    password: str,
+    *,
+    json_payload: Optional[dict] = None,
+) -> requests.Response:
+    try:
+        resp = requests.request(
+            method,
+            url,
+            auth=(username, password),
+            json=json_payload,
+            timeout=30,
+            headers={"Accept": "application/json"},
+        )
+    except RequestException as exc:
+        raise HTTPException(502, detail=f"Connexion à WordPress impossible: {exc}") from exc
+    return resp
+
+
+def _parse_wordpress_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text or "La requête WordPress a échoué."
+    if isinstance(payload, dict):
+        return payload.get("message") or payload.get("error") or payload.get("detail") or "La requête WordPress a échoué."
+    return "La requête WordPress a échoué."
+
+
+# -----------------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------------
 
 @app.get("/health")
 def health() -> dict:
@@ -204,184 +256,12 @@ async def convert(file: UploadFile = File(...)) -> ConvertResponse:
 
     try:
         md, html, engine = docx_to_markdown_and_html(data)
-    except Exception as exc:  # pragma: no cover - defensive guard
-        traceback.print_exc()  # utile en dev pour voir la stack dans les logs
+    except Exception as exc:
+        traceback.print_exc()
         raise HTTPException(500, detail=f"Conversion échouée: {exc}") from exc
 
-    stats = {
-        "bytes": len(data),
-        "chars_md": len(md),
-        "chars_html": len(html),
-        "engine": engine,
-    }
+    stats = {"bytes": len(data), "chars_md": len(md), "chars_html": len(html), "engine": engine}
     return ConvertResponse(markdown=md, html=html, engine=engine, stats=stats)
-
-
-@app.post(
-    "/wordpress/subscriptions",
-    response_model=WordPressSubscriptionsResponse,
-    summary="Fetch the WooCommerce subscriptions admin page HTML.",
-)
-async def wordpress_subscriptions(
-    payload: WordPressSubscriptionsRequest,
-) -> WordPressSubscriptionsResponse:
-    """Authenticate against WordPress and return the subscriptions page HTML."""
-
-    client = WordPressClient(payload.base_url)
-
-    try:
-        html = fetch_subscriptions_page(
-            base_url=client.base_url,
-            username=payload.username,
-            password=payload.password,
-            client=client,
-        )
-    except WordPressAuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-    subscriptions_path = (
-        "wp-admin/admin.php?page=wf_subscriptions_csv_im_ex&tab=subscriptions"
-    )
-    return WordPressSubscriptionsResponse(
-        base_url=client.base_url,
-        admin_path=subscriptions_path,
-        html=html,
-    )
-
-
-@app.post(
-    "/wordpress/subscriptions/export",
-    response_model=WordPressSubscriptionsExportResponse,
-    summary="Export WooCommerce subscriptions as a CSV file.",
-)
-async def wordpress_subscriptions_export(
-    payload: WordPressSubscriptionsExportRequest,
-) -> WordPressSubscriptionsExportResponse:
-    try:
-        base_url = payload.normalised_base_url()
-        username = payload.resolved_username()
-        password = payload.resolved_admin_password()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    client = WordPressClient(base_url)
-
-    headless = payload.headless
-    if headless is None:
-        headless = _DEFAULT_SELENIUM_HEADLESS
-
-    browser = (payload.browser or _DEFAULT_SELENIUM_BROWSER).strip() or _DEFAULT_SELENIUM_BROWSER
-
-    try:
-        from .selenium_exporter import export_subscriptions_csv_with_selenium
-
-        content, filename, content_type = export_subscriptions_csv_with_selenium(
-            base_url=client.base_url,
-            username=username,
-            password=password,
-            browser=browser,
-            headless=headless,
-        )
-    except ModuleNotFoundError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Le module Selenium n'est pas disponible dans l'environnement. "
-                "Merci d'installer la dépendance 'selenium' pour activer l'export."
-            ),
-        ) from exc
-    except WordPressAuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except WordPressExportError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    encoded = base64.b64encode(content).decode("ascii")
-    return WordPressSubscriptionsExportResponse(
-        filename=filename,
-        content_type=content_type,
-        data=encoded,
-    )
-
-
-def _normalise_base_url(raw_url: str) -> str:
-    raw_url = raw_url.strip()
-    if not raw_url:
-        raise ValueError("Merci de renseigner l'URL de votre site WordPress.")
-
-    parsed = urlparse(raw_url)
-    if not parsed.scheme:
-        raw_url = f"https://{raw_url}"
-        parsed = urlparse(raw_url)
-
-    if not parsed.netloc:
-        raise ValueError(
-            "L'URL fournie n'est pas valide. Exemple attendu: https://monsite.com"
-        )
-
-    path = parsed.path or "/"
-    lowered = path.lower()
-
-    admin_markers = ("/wp-admin", "/wp-login.php")
-    for marker in admin_markers:
-        idx = lowered.find(marker)
-        if idx != -1:
-            path = path[:idx] or "/"
-            lowered = path.lower()
-            break
-
-    if not path.endswith("/"):
-        path = f"{path}/"
-
-    normalised = parsed._replace(path=path, params="", query="", fragment="")
-    return normalised.geturl()
-
-
-def _wordpress_error(status_code: int, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={"success": False, "message": message, "error": message},
-    )
-
-
-def _parse_wordpress_error(response: requests.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        return response.text or "La requête WordPress a échoué."
-
-    if isinstance(payload, dict):
-        return (
-            payload.get("message")
-            or payload.get("error")
-            or payload.get("detail")
-            or "La requête WordPress a échoué."
-        )
-    return "La requête WordPress a échoué."
-
-
-def _wordpress_auth_request(
-    method: str,
-    url: str,
-    username: str,
-    password: str,
-    *,
-    json_payload: Optional[dict] = None,
-) -> requests.Response:
-    try:
-        response = requests.request(
-            method,
-            url,
-            auth=(username, password),
-            json=json_payload,
-            timeout=15,
-            headers={"Accept": "application/json"},
-        )
-    except RequestException as exc:  # pragma: no cover - network failure
-        raise HTTPException(
-            status_code=502,
-            detail=f"Connexion à WordPress impossible: {exc}",
-        ) from exc
-    return response
 
 
 @app.post("/wordpress/connect", response_model=WordPressConnectResponse)
@@ -394,32 +274,25 @@ def wordpress_connect(payload: WordPressConnectRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     api_url = urljoin(base_url, "wp-json/wp/v2/users/me")
-    response = _wordpress_auth_request("GET", api_url, username, password)
+    resp = _wordpress_auth_request("GET", api_url, username, password)
 
-    if response.status_code == 200:
+    if resp.status_code == 200:
         try:
-            data = response.json()
+            data = resp.json()
         except ValueError:
             data = {}
-
-        display_name = None
-        if isinstance(data, dict):
-            display_name = data.get("name") or data.get("slug")
-
-        message = (
-            f"Connexion réussie à WordPress pour l'utilisateur {display_name or username}."
-        )
+        display_name = data.get("name") or data.get("slug") if isinstance(data, dict) else None
         site_url = base_url.rstrip("/")
         return WordPressConnectResponse(
             success=True,
-            message=message,
+            message=f"Connexion réussie à WordPress pour l'utilisateur {display_name or username}.",
             username=username,
             display_name=display_name,
             url=site_url,
         )
 
-    error_message = _parse_wordpress_error(response)
-    return _wordpress_error(response.status_code, error_message)
+    error_message = _parse_wordpress_error(resp)
+    return _wordpress_error(resp.status_code, error_message)
 
 
 @app.post("/wordpress/publish", response_model=WordPressPublishResponse)
@@ -433,51 +306,161 @@ def wordpress_publish(payload: WordPressPublishRequest):
 
     content = payload.html or payload.content or payload.markdown
     if not content:
-        raise HTTPException(
-            status_code=400,
-            detail="Merci de fournir du contenu (HTML ou Markdown) à publier.",
-        )
+        raise HTTPException(400, detail="Merci de fournir du contenu (HTML ou Markdown) à publier.")
 
-    post_payload = {
-        "title": payload.title or "",
-        "status": payload.status,
-        "content": content,
-    }
-
+    post_payload = {"title": payload.title or "", "status": payload.status, "content": content}
     if payload.slug:
         post_payload["slug"] = payload.slug
 
-    posts_url = urljoin(base_url, "wp-json/wp/v2/posts")
-    response = _wordpress_auth_request(
-        "POST", posts_url, username, password, json_payload=post_payload
-    )
+    api_url = urljoin(base_url, "wp-json/wp/v2/posts")
+    resp = _wordpress_auth_request("POST", api_url, username, password, json_payload=post_payload)
 
-    if response.status_code in {200, 201}:
+    if resp.status_code in {200, 201}:
         try:
-            data = response.json()
+            data = resp.json()
         except ValueError:
             data = {}
-
-        link = None
-        permalink = None
-        status = None
-        post_id = None
-        if isinstance(data, dict):
-            link = data.get("link")
-            permalink = data.get("permalink") or link
-            status = data.get("status")
-            post_id = data.get("id")
-
+        link = data.get("link") if isinstance(data, dict) else None
+        permalink = data.get("permalink") if isinstance(data, dict) else None
+        status = data.get("status") if isinstance(data, dict) else None
+        post_id = data.get("id") if isinstance(data, dict) else None
         message = "Article publié avec succès sur WordPress."
         return WordPressPublishResponse(
             success=True,
             message=message,
             link=link or permalink,
             url=link or permalink,
-            permalink=permalink,
+            permalink=permalink or link,
             post_id=post_id,
             status=status,
         )
 
-    error_message = _parse_wordpress_error(response)
-    return _wordpress_error(response.status_code, error_message)
+    error_message = _parse_wordpress_error(resp)
+    return _wordpress_error(resp.status_code, error_message)
+
+
+@app.post(
+    "/wordpress/subscriptions",
+    response_model=WordPressSubscriptionsResponse,
+    summary="Retourne le chemin admin pour les abonnements WooCommerce (aperçu/lien).",
+)
+def wordpress_subscriptions(payload: WordPressSubscriptionsRequest) -> WordPressSubscriptionsResponse:
+    """
+    Pas d'API key WooCommerce ici : on renvoie le lien admin vers le plugin Import/Export.
+    L'HTML est laissé vide (le frontend affichera surtout le lien 'Ouvrir la page').
+    """
+    try:
+        base_url = payload.normalised_base_url()
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
+    subscriptions_path = "wp-admin/admin.php?page=wt_import_export_for_woo"
+    return WordPressSubscriptionsResponse(baseUrl=base_url, adminPath=subscriptions_path, html="")
+
+
+@app.post(
+    "/wordpress/subscriptions/export",
+    response_model=WordPressSubscriptionsExportResponse,
+    summary="Export WooCommerce subscriptions (CSV) via Selenium (HTTP sync).",
+)
+def wordpress_subscriptions_export_http(payload: WordPressSubscriptionsExportRequest):
+    """
+    Route HTTP synchrone (optionnelle). Le WebSocket est recommandé pour le suivi en temps réel.
+    """
+    try:
+        base_url = payload.normalised_base_url()
+        username = payload.resolved_username()
+        password = payload.resolved_admin_password()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    headless = _DEFAULT_SELENIUM_HEADLESS if payload.headless is None else bool(payload.headless)
+    browser = (payload.browser or _DEFAULT_SELENIUM_BROWSER).strip() or _DEFAULT_SELENIUM_BROWSER
+
+    try:
+        content, filename, content_type = export_subscriptions_csv_with_selenium(
+            base_url=base_url,
+            username=username,
+            password=password,
+            browser=browser,
+            headless=headless,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Export échoué: {exc}") from exc
+
+    encoded = base64.b64encode(content).decode("ascii")
+    return WordPressSubscriptionsExportResponse(filename=filename, content_type=content_type, data=encoded)
+
+
+@app.websocket("/ws/wordpress/subscriptions/export")
+async def ws_wordpress_subscriptions_export(websocket: WebSocket):
+    """
+    WebSocket de streaming de progression pour l'export Selenium.
+    Envoie des événements {"type":"progress","message":..., "pct": int}
+    puis un final {"type":"done", "filename":..., "contentType":..., "data": base64_csv}
+    """
+    await websocket.accept()
+    try:
+        # 1) On attend le payload initial du client
+        first = await websocket.receive_json()
+        base_url = (first.get("baseUrl") or first.get("siteUrl") or first.get("url") or "").strip()
+        username = (first.get("username") or first.get("user") or "").strip()
+        password = (first.get("password") or "").strip()
+        browser = (first.get("browser") or _DEFAULT_SELENIUM_BROWSER).strip()
+        headless = first.get("headless")
+        if headless is None:
+            headless = _DEFAULT_SELENIUM_HEADLESS
+
+        if not base_url or not username or not password:
+            await websocket.send_json({"type": "error", "message": "Merci de fournir baseUrl, username et password."})
+            await websocket.close()
+            return
+
+        loop = asyncio.get_running_loop()
+
+        # callback thread-safe pour pousser les événements de progression
+        def progress_cb(ev: dict):
+            try:
+                asyncio.run_coroutine_threadsafe(websocket.send_json(ev), loop)
+            except RuntimeError:
+                pass
+
+        # 2) Lancer l'export dans un worker thread pour ne pas bloquer l'event loop
+        def run_export():
+            return export_subscriptions_csv_with_selenium(
+                base_url=base_url,
+                username=username,
+                password=password,
+                browser=browser,
+                headless=bool(headless),
+                progress_cb=progress_cb,
+            )
+
+        try:
+            content, filename, content_type = await loop.run_in_executor(None, run_export)
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "message": f"{exc}"})
+            await websocket.close()
+            return
+
+        # 3) Envoi final avec le CSV encodé
+        await websocket.send_json({
+            "type": "done",
+            "message": "Export terminé.",
+            "filename": filename or "woocommerce-subscriptions.csv",
+            "contentType": content_type or "text/csv",
+            "data": base64.b64encode(content).decode("ascii"),
+        })
+        await websocket.close()
+
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"type": "error", "message": f"Erreur WebSocket: {exc}"})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
