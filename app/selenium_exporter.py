@@ -219,6 +219,11 @@ def _download_export(
             "Impossible de trouver le bouton d'export WooCommerce dans l'interface."
         )
 
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", locator)
+    except WebDriverException:
+        pass
+
     locator.click()
 
     try:
@@ -238,7 +243,43 @@ def _download_export(
 
 
 def _locate_export_button(driver: WebDriver):
-    keywords = ("export", "exporter")
+    selectors = [
+        (By.CSS_SELECTOR, "button[id*='export']"),
+        (By.CSS_SELECTOR, "button[name*='export']"),
+        (By.CSS_SELECTOR, "button[value*='export']"),
+        (By.CSS_SELECTOR, "button[class*='export']"),
+        (By.CSS_SELECTOR, "button[data-action*='export']"),
+        (By.CSS_SELECTOR, "button[data-export]"),
+        (By.CSS_SELECTOR, "a[id*='export']"),
+        (By.CSS_SELECTOR, "a[class*='export']"),
+        (By.CSS_SELECTOR, "a[href*='export']"),
+        (By.CSS_SELECTOR, "input[type='submit'][name*='export']"),
+        (By.CSS_SELECTOR, "input[type='submit'][value*='export']"),
+        (By.CSS_SELECTOR, "input[type='submit'][id*='export']"),
+    ]
+
+    for by, value in selectors:
+        try:
+            elements = driver.find_elements(by, value)
+        except WebDriverException:
+            continue
+
+        for element in elements:
+            try:
+                if not element.is_displayed() or not element.is_enabled():
+                    continue
+
+                text = (element.text or "").strip()
+                if text:
+                    lowered = text.lower()
+                    if "export" in lowered or "exporter" in lowered:
+                        return element
+
+                return element
+            except WebDriverException:
+                continue
+
+    keywords = ("export", "exporter", "download", "télécharger")
     candidates = driver.find_elements(By.CSS_SELECTOR, "button, a, input[type='submit']")
 
     for element in candidates:
@@ -251,6 +292,9 @@ def _locate_export_button(driver: WebDriver):
                 element.get_attribute("value") or "",
                 element.get_attribute("aria-label") or "",
                 element.get_attribute("title") or "",
+                element.get_attribute("data-action") or "",
+                element.get_attribute("class") or "",
+                element.get_attribute("href") or "",
             ]
             text = " ".join(fragment.strip().lower() for fragment in text_fragments)
             if any(keyword in text for keyword in keywords):

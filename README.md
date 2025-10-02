@@ -43,3 +43,24 @@ print(filename, len(content), content_type)
 
 Make sure to install the browser binaries once in your environment with
 `playwright install chromium` before running the helper.
+
+### Debugging Selenium runs locally
+
+When you rely on the Selenium based exporter you can now control the browser
+that gets launched as well as whether it should run headless.  By default the
+API launches a headless Chromium instance, but you can override this behaviour
+either via the JSON payload or environment variables:
+
+```json
+{
+  "baseUrl": "https://lavamedia.be",
+  "username": "votre.identifiant",
+  "password": "votre.mot.de.passe",
+  "headless": false
+}
+```
+
+Alternatively set `SELENIUM_HEADLESS=false` (and optionally
+`SELENIUM_BROWSER=firefox`) before starting the API server if you prefer not to
+expose the flag to the frontend.  This makes it easier to inspect the automated
+steps locally while keeping the production setup fully headless.
