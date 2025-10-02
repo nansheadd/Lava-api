@@ -20,7 +20,7 @@ from requests import RequestException
 from urllib.parse import urljoin, urlparse
 
 from .converters import docx_to_markdown_and_html
-from .playwright_exporter import export_subscriptions_csv_with_playwright
+from .selenium_exporter import export_subscriptions_csv_with_selenium
 from .wordpress_client import (
     WordPressAuthenticationError,
     WordPressClient,
@@ -249,7 +249,7 @@ async def wordpress_subscriptions_export(
     client = WordPressClient(base_url)
 
     try:
-        content, filename, content_type = export_subscriptions_csv_with_playwright(
+        content, filename, content_type = export_subscriptions_csv_with_selenium(
             base_url=client.base_url,
             username=username,
             password=password,
