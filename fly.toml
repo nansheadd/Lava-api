@@ -1,20 +1,35 @@
-FROM python:3.11-slim
-WORKDIR /app
+app = "lavatools-api"
+primary_region = "ams"
 
-# Paquets système nécessaires (curl/unzip utiles pour debug/télémétrie)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip \
- && rm -rf /var/lib/apt/lists/*
+[build]
+  dockerfile = "Dockerfile"
 
-# Dépendances Python
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+[env]
+  # Uvicorn écoutera dessus (et le Dockerfile lira cette variable)
+  PORT = "8080"
+  ALLOWED_ORIGINS = "https://lavatools-web.fly.dev,http://localhost:5173,http://127.0.0.1:5173"
 
-# Code
-COPY app ./app
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
 
-# IMPORTANT: Fly enverra le trafic sur $PORT (fly.toml=8080)
-EXPOSE 8080
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 100
+    hard_limit = 200
 
-# 🔑 Utilise la shell-form pour que ${PORT} soit interpolé par le shell
-CMD sh -c 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}'
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "5s"
+    grace_period = "60s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
