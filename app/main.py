@@ -20,7 +20,6 @@ from requests import RequestException
 from urllib.parse import urljoin, urlparse
 
 from .converters import docx_to_markdown_and_html
-from .selenium_exporter import export_subscriptions_csv_with_selenium
 from .wordpress_client import (
     WordPressAuthenticationError,
     WordPressClient,
@@ -29,6 +28,24 @@ from .wordpress_client import (
 )
 
 app = FastAPI(title="LavaTools", version="0.1.0")
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    value = value.strip().lower()
+    if value in {"", "1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+
+    return default
+
+
+_DEFAULT_SELENIUM_BROWSER = os.getenv("SELENIUM_BROWSER", "chromium")
+_DEFAULT_SELENIUM_HEADLESS = _env_flag("SELENIUM_HEADLESS", True)
 
 
 _allowed_origins = os.getenv("ALLOWED_ORIGINS")
@@ -159,7 +176,8 @@ class WordPressPublishResponse(BaseModel):
 
 
 class WordPressSubscriptionsExportRequest(WordPressCredentials):
-    pass
+    browser: Optional[str] = None
+    headless: Optional[bool] = None
 
 
 class WordPressSubscriptionsExportResponse(BaseModel):
@@ -248,12 +266,30 @@ async def wordpress_subscriptions_export(
 
     client = WordPressClient(base_url)
 
+    headless = payload.headless
+    if headless is None:
+        headless = _DEFAULT_SELENIUM_HEADLESS
+
+    browser = (payload.browser or _DEFAULT_SELENIUM_BROWSER).strip() or _DEFAULT_SELENIUM_BROWSER
+
     try:
+        from .selenium_exporter import export_subscriptions_csv_with_selenium
+
         content, filename, content_type = export_subscriptions_csv_with_selenium(
             base_url=client.base_url,
             username=username,
             password=password,
+            browser=browser,
+            headless=headless,
         )
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Le module Selenium n'est pas disponible dans l'environnement. "
+                "Merci d'installer la dépendance 'selenium' pour activer l'export."
+            ),
+        ) from exc
     except WordPressAuthenticationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except WordPressExportError as exc:
