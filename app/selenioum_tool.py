@@ -1,6 +1,6 @@
 from selenium import webdriver
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -20,25 +20,52 @@ PASSWORD = "hsp507R@yc@"  # en prod: os.environ["WP_PASS"]
 WP_LOGIN_URL = "https://lavamedia.be/wp-login.php"
 PLUGIN_URL   = "https://lavamedia.be/wp-admin/admin.php?page=wt_import_export_for_woo"
 
-# Dossier de téléchargement (évite la popup Firefox)
+# Dossier de téléchargement (évite la popup du navigateur)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "exports")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-options = Options()
-# options.headless = False
-# Préférences pour télécharger automatiquement les CSV sans popup
-options.set_preference("browser.download.folderList", 2)  # dossier personnalisé
-options.set_preference("browser.download.dir", DOWNLOAD_DIR)
-options.set_preference("browser.download.useDownloadDir", True)
-options.set_preference("browser.download.manager.showWhenStarting", False)
-options.set_preference("browser.download.alwaysOpenPanel", False)
-options.set_preference("browser.helperApps.neverAsk.saveToDisk",
-                       "text/csv,application/csv,application/vnd.ms-excel,application/octet-stream,text/plain")
-options.set_preference("pdfjs.disabled", True)
+options = ChromeOptions()
+# options.add_argument("--headless=new")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--disable-gpu")
+options.add_argument("--window-size=1920,1080")
 
-service = Service()
-driver = webdriver.Firefox(service=service, options=options)
+chrome_binary = os.environ.get("CHROME_BINARY")
+if chrome_binary:
+    options.binary_location = chrome_binary
+
+# Préférences pour télécharger automatiquement les CSV sans popup
+prefs = {
+    "download.default_directory": DOWNLOAD_DIR,
+    "download.prompt_for_download": False,
+    "download.directory_upgrade": True,
+    "safebrowsing.enabled": True,
+}
+options.add_experimental_option("prefs", prefs)
+
+service = ChromeService()
+try:
+    driver = webdriver.Chrome(service=service, options=options)
+except Exception:
+    # Fallback propre vers Firefox si Chrome n'est pas disponible sur l'environnement courant
+    from selenium.webdriver.firefox.service import Service as FirefoxService
+    from selenium.webdriver.firefox.options import Options as FirefoxOptions
+
+    ff_options = FirefoxOptions()
+    ff_options.set_preference("browser.download.folderList", 2)
+    ff_options.set_preference("browser.download.dir", DOWNLOAD_DIR)
+    ff_options.set_preference("browser.download.useDownloadDir", True)
+    ff_options.set_preference("browser.download.manager.showWhenStarting", False)
+    ff_options.set_preference("browser.download.alwaysOpenPanel", False)
+    ff_options.set_preference(
+        "browser.helperApps.neverAsk.saveToDisk",
+        "text/csv,application/csv,application/vnd.ms-excel,application/octet-stream,text/plain",
+    )
+    ff_options.set_preference("pdfjs.disabled", True)
+
+    driver = webdriver.Firefox(service=FirefoxService(), options=ff_options)
 wait = WebDriverWait(driver, 45)  # délais plus longs pour site lent
 
 # --------- Helpers robustes ----------
