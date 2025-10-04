@@ -6,3 +6,4 @@ selenium>=4.24
 python-multipart>=0.0.9   # nécessaire pour UploadFile / form-data
 mammoth>=1.8.0            # conversion DOCX -> HTML
 markdownify>=0.12.1       # HTML -> Markdown
+playwright>=1.44          # navigateur headless pour les exports
