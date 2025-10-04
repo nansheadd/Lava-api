@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from typing import Tuple, Optional, Callable, Dict, Any
 from urllib.parse import urljoin
@@ -169,16 +170,23 @@ def make_chrome(headless: bool) -> webdriver.Chrome:
     # Fallback manuel : rechercher un chromedriver local si Selenium Manager
     # n'a pas pu le télécharger
     driver_path = os.environ.get("CHROMEDRIVER_PATH")
-    if not (driver_path and os.path.exists(driver_path)):
-        for candidate in (
-            driver_path,
-            "/usr/bin/chromedriver",
-            "/usr/lib/chromium/chromedriver",
-            "/usr/lib/chromium-browser/chromedriver",
-        ):
-            if candidate and os.path.exists(candidate):
-                driver_path = candidate
-                break
+    candidates = (
+        driver_path,
+        shutil.which("chromedriver"),
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+        "/usr/lib/chromium-browser/chromedriver",
+    )
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if not os.path.exists(candidate) or os.path.isdir(candidate):
+            continue
+        if not os.access(candidate, os.X_OK):
+            continue
+        driver_path = candidate
+        break
 
     if driver_path and os.path.exists(driver_path):
         service = ChService(executable_path=driver_path)
