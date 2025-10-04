@@ -147,27 +147,45 @@ def make_chrome(headless: bool) -> webdriver.Chrome:
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
 
-    # Localiser Chromium
+    # Localiser Chromium si un binaire custom est fourni
     chrome_binary = os.environ.get("CHROME_BINARY")
-    for candidate in (chrome_binary, "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
+    for candidate in (
+        chrome_binary,
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+    ):
         if candidate and os.path.exists(candidate):
             opts.binary_location = candidate
             break
 
-    # Localiser chromedriver si présent (sur arm64, souvent absent)
+    # Premier essai : laisser Selenium Manager résoudre le driver Chrome
+    # (présent à partir de Selenium 4.6+)
+    try:
+        return webdriver.Chrome(options=opts)
+    except Exception as first_error:
+        last_error = first_error
+
+    # Fallback manuel : rechercher un chromedriver local si Selenium Manager
+    # n'a pas pu le télécharger
     driver_path = os.environ.get("CHROMEDRIVER_PATH")
     if not (driver_path and os.path.exists(driver_path)):
-        for candidate in (driver_path, "/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver", "/usr/lib/chromium-browser/chromedriver"):
+        for candidate in (
+            driver_path,
+            "/usr/bin/chromedriver",
+            "/usr/lib/chromium/chromedriver",
+            "/usr/lib/chromium-browser/chromedriver",
+        ):
             if candidate and os.path.exists(candidate):
                 driver_path = candidate
                 break
 
-    if not driver_path or not os.path.exists(driver_path):
-        # On laisse remonter une erreur pour déclencher le fallback
-        raise RuntimeError("chromedriver introuvable (arm64/trixie).")
+    if driver_path and os.path.exists(driver_path):
+        service = ChService(executable_path=driver_path)
+        return webdriver.Chrome(service=service, options=opts)
 
-    service = ChService(executable_path=driver_path)
-    return webdriver.Chrome(service=service, options=opts)
+    # Aucun driver disponible -> remonter l'erreur initiale pour déclencher un fallback
+    raise last_error
 
 def make_firefox(headless: bool) -> webdriver.Firefox:
     opts = FxOptions()
@@ -187,17 +205,23 @@ def make_firefox(headless: bool) -> webdriver.Firefox:
     service = FxService(executable_path=os.environ.get("GECKODRIVER_PATH", "/usr/local/bin/geckodriver"))
     return webdriver.Firefox(service=service, options=opts)
 
-def build_driver(browser: str = "firefox", headless: bool = True):
-    b = (browser or os.getenv("SELENIUM_BROWSER", "firefox")).strip().lower()
-    # default to Firefox (reliable on arm64)
-    if b in ("firefox", "ff", "gecko", ""):
-        return make_firefox(headless)
-    # Optional Chrome path if you add a working chromedriver later
+def build_driver(browser: str = "chrome", headless: bool = True):
+    b = (browser or os.getenv("SELENIUM_BROWSER", "chrome")).strip().lower()
+    last_error: Optional[Exception] = None
+
+    if b in ("chrome", "chromium", "google-chrome", ""):
+        try:
+            return make_chrome(headless)
+        except Exception as exc:
+            last_error = exc
+
+    # Firefox reste disponible en fallback si Chrome n'est pas utilisable
     try:
-        return make_chrome(headless)  # only if you implemented make_chrome + driver exists
-    except Exception:
-        # clean fallback
         return make_firefox(headless)
+    except Exception:
+        if last_error:
+            raise last_error
+        raise
 
 
 # ------------------------------------------------------------------------------
