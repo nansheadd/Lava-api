@@ -230,11 +230,11 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str, Dict[st
 
             if note_text:
                 target = a_tag.parent if a_tag.parent and a_tag.parent.name == "sup" else a_tag
-                sup = soup.new_tag("sup")
-                sup["class"] = ["lava-note-ref"]
-                sup["data-note-id"] = note_id
-                sup.string = f"[{note_id}]"
-                target.replace_with(sup)
+                fragment = BeautifulSoup(f"[note]{note_text}[/note]", "html.parser")
+                new_nodes = list(fragment.contents)
+                for new_node in reversed(new_nodes):
+                    target.insert_after(new_node)
+                target.decompose()
 
     # ==============================================================================
     # CORRECTION FINALE : Suppression garantie de la liste de notes à la fin
@@ -267,5 +267,10 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str, Dict[st
     final_text_output = unescape(final_text_output)
 
     md_output = _html_to_markdown(final_text_output)
+    if notes_map:
+        for note_id, note_html in sorted(notes_map.items(), key=lambda kv: int(kv[0])):
+            pattern = re.compile(rf'\[{re.escape(note_id)}\]')
+            replacement = f"[note]{note_html}[/note]"
+            md_output = pattern.sub(replacement, md_output)
 
     return md_output, final_text_output, "LavaConverter", notes_map
