@@ -4,7 +4,7 @@ import asyncio
 import base64
 import os
 import traceback
-from typing import Optional
+from typing import Optional, Dict
 from urllib.parse import urljoin
 
 import requests
@@ -69,6 +69,7 @@ class ConvertResponse(BaseModel):
     html: str
     engine: str
     stats: dict
+    notes: Dict[str, str] = Field(default_factory=dict)
 
 
 class WordPressConnectRequest(BaseModel):
@@ -255,13 +256,13 @@ async def convert(file: UploadFile = File(...)) -> ConvertResponse:
         raise HTTPException(413, detail="Fichier trop volumineux (>10 Mo)")
 
     try:
-        md, html, engine = docx_to_markdown_and_html(data)
+        md, html, engine, notes = docx_to_markdown_and_html(data)
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(500, detail=f"Conversion échouée: {exc}") from exc
 
-    stats = {"bytes": len(data), "chars_md": len(md), "chars_html": len(html), "engine": engine}
-    return ConvertResponse(markdown=md, html=html, engine=engine, stats=stats)
+    stats = {"bytes": len(data), "chars_md": len(md), "chars_html": len(html), "engine": engine, "notes": len(notes)}
+    return ConvertResponse(markdown=md, html=html, engine=engine, stats=stats, notes=notes)
 
 
 @app.post("/wordpress/connect", response_model=WordPressConnectResponse)

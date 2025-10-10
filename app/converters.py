@@ -188,7 +188,8 @@ def _html_to_markdown(html: str) -> str:
 
     return "\n\n".join(line for line in blocks if line).strip()
 
-def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
+
+def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str, Dict[str, str]]:
     """
     Convertit un .docx en format texte pour l'éditeur WordPress.
     """
@@ -221,6 +222,7 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
         notes = _extract_notes_from_docx(docx_file)
     else:
         docx_file.seek(0)
+    notes_map = dict(notes)
     if notes:
         for a_tag in soup.find_all("a", id=re.compile(r"^(end|foot)note-ref-\d+$")):
             note_id = a_tag["id"].split("-")[-1]
@@ -228,13 +230,11 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
 
             if note_text:
                 target = a_tag.parent if a_tag.parent and a_tag.parent.name == "sup" else a_tag
-                fragment = BeautifulSoup(f"[note]{note_text}[/note]", "html.parser")
-                new_nodes = list(fragment.contents)
-
-                for new_node in reversed(new_nodes):
-                    target.insert_after(new_node)
-
-                target.decompose()
+                sup = soup.new_tag("sup")
+                sup["class"] = ["lava-note-ref"]
+                sup["data-note-id"] = note_id
+                sup.string = f"[{note_id}]"
+                target.replace_with(sup)
 
     # ==============================================================================
     # CORRECTION FINALE : Suppression garantie de la liste de notes à la fin
@@ -268,19 +268,4 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
 
     md_output = _html_to_markdown(final_text_output)
 
-    def _neutralise_note_shortcodes(value: str) -> str:
-        def replace_open(match: re.Match[str]) -> str:
-            tag = match.group(1)
-            return f"[&#8203;{tag}]"
-
-        def replace_close(match: re.Match[str]) -> str:
-            tag = match.group(1)
-            return f"[&#8203;/{tag}]"
-
-        value = re.sub(r"\[(note)\]", replace_open, value, flags=re.IGNORECASE)
-        value = re.sub(r"\[/(note)\]", replace_close, value, flags=re.IGNORECASE)
-        return value
-
-    final_text_output = _neutralise_note_shortcodes(final_text_output)
-
-    return md_output, final_text_output, "LavaConverter"
+    return md_output, final_text_output, "LavaConverter", notes_map
