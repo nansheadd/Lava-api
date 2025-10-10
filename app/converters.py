@@ -6,7 +6,7 @@ import zipfile
 from typing import Dict, Tuple
 
 import mammoth
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup, NavigableString, FeatureNotFound
 
 def _extract_notes_from_docx(docx_file: io.BytesIO) -> Dict[str, str]:
     """Extrait les notes depuis word/footnotes.xml ou word/endnotes.xml."""
@@ -53,7 +53,10 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
     raw_html = result.value
 
     # 2. Utilisation de BeautifulSoup pour une manipulation fiable du HTML
-    soup = BeautifulSoup(raw_html, 'lxml')
+    try:
+        soup = BeautifulSoup(raw_html, "lxml")
+    except FeatureNotFound:
+        soup = BeautifulSoup(raw_html, "html.parser")
 
     # 3. Remplacement chirurgical des appels de note par le shortcode [note]
     docx_file.seek(0)
