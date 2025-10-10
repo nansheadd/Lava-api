@@ -266,12 +266,21 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
     
     final_text_output = unescape(final_text_output)
 
-    def _escape_note_shortcode(match: re.Match[str]) -> str:
-        body = match.group(1)
-        return f"&#91;{body}&#93;"
-
-    final_text_output = re.sub(r"\[(\/?note)\]", _escape_note_shortcode, final_text_output, flags=re.IGNORECASE)
-
     md_output = _html_to_markdown(final_text_output)
+
+    def _neutralise_note_shortcodes(value: str) -> str:
+        def replace_open(match: re.Match[str]) -> str:
+            tag = match.group(1)
+            return f"[&#8203;{tag}]"
+
+        def replace_close(match: re.Match[str]) -> str:
+            tag = match.group(1)
+            return f"[&#8203;/{tag}]"
+
+        value = re.sub(r"\[(note)\]", replace_open, value, flags=re.IGNORECASE)
+        value = re.sub(r"\[/(note)\]", replace_close, value, flags=re.IGNORECASE)
+        return value
+
+    final_text_output = _neutralise_note_shortcodes(final_text_output)
 
     return md_output, final_text_output, "LavaConverter"
