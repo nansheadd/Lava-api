@@ -64,6 +64,129 @@ def _collect_notes_from_soup(soup: BeautifulSoup) -> Dict[str, str]:
 
     return notes
 
+
+def _normalize_inline(text: str) -> str:
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\s*\n\s*', '\n', text)
+    return text.strip()
+
+
+def _inline_children(tag: Tag) -> str:
+    return "".join(_inline_markdown(child) for child in tag.children)
+
+
+def _inline_markdown(node) -> str:
+    if isinstance(node, NavigableString):
+        return str(node)
+
+    name = node.name.lower()
+
+    if name in {"strong", "b"}:
+        content = _inline_children(node)
+        return f"**{content}**" if content else ""
+    if name in {"em", "i"}:
+        content = _inline_children(node)
+        return f"*{content}*" if content else ""
+    if name in {"code", "kbd"}:
+        content = _inline_children(node)
+        return f"`{content}`" if content else ""
+    if name == "br":
+        return "\n"
+    if name == "a":
+        content = _inline_children(node)
+        href = node.get("href", "")
+        if href and content:
+            return f"[{content}]({href})"
+        return content or href
+    if name == "span":
+        return _inline_children(node)
+    if name == "p":
+        return _inline_children(node)
+    if name == "sup":
+        return _inline_children(node)
+    if name in {"ul", "ol"}:
+        return "\n".join(_list_to_markdown(node))
+
+    return _inline_children(node)
+
+
+def _list_to_markdown(list_tag: Tag, indent: int = 0) -> list[str]:
+    ordered = list_tag.name.lower() == "ol"
+    lines: list[str] = []
+    index = 1
+    for li in list_tag.find_all("li", recursive=False):
+        primary_parts: list[str] = []
+        nested_lists: list[Tag] = []
+
+        for child in li.children:
+            if isinstance(child, NavigableString):
+                text = str(child)
+                if text.strip():
+                    primary_parts.append(text)
+            elif isinstance(child, Tag) and child.name.lower() in {"ul", "ol"}:
+                nested_lists.append(child)
+            else:
+                primary_parts.append(_inline_markdown(child))
+
+        text = _normalize_inline("".join(primary_parts))
+        bullet = f"{index}." if ordered else "-"
+        indent_str = "  " * indent
+        if text:
+            lines.append(f"{indent_str}{bullet} {text}".rstrip())
+        else:
+            lines.append(f"{indent_str}{bullet}")
+
+        for nested in nested_lists:
+            lines.extend(_list_to_markdown(nested, indent + 1))
+        index += 1
+    return lines
+
+
+def _block_to_markdown(tag: Tag) -> list[str]:
+    name = tag.name.lower()
+    if name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        level = int(name[1])
+        content = _normalize_inline(_inline_children(tag))
+        return [f"{'#' * level} {content}".rstrip()] if content else []
+    if name == "p":
+        content = _normalize_inline(_inline_children(tag))
+        return [content] if content else []
+    if name in {"ul", "ol"}:
+        return _list_to_markdown(tag)
+    if name == "blockquote":
+        content = _normalize_inline(_inline_children(tag))
+        return [f"> {content}".rstrip()] if content else []
+
+    content = _normalize_inline(_inline_children(tag))
+    return [content] if content else []
+
+
+def _html_to_markdown(html: str) -> str:
+    if not html:
+        return ""
+
+    wrapper = f"<div>{html}</div>"
+    try:
+        soup = BeautifulSoup(wrapper, "lxml")
+    except FeatureNotFound:
+        soup = BeautifulSoup(wrapper, "html.parser")
+
+    container = soup.find("div")
+    if not container:
+        return ""
+
+    blocks: list[str] = []
+    for child in container.children:
+        if isinstance(child, NavigableString):
+            text = _normalize_inline(str(child))
+            if text:
+                blocks.append(text)
+            continue
+        if isinstance(child, Tag):
+            blocks.extend(_block_to_markdown(child))
+
+    return "\n\n".join(line for line in blocks if line).strip()
+
 def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
     """
     Convertit un .docx en format texte pour l'éditeur WordPress.
@@ -144,7 +267,6 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
     # from html import unescape
     # final_text_output = unescape(final_text_output)
 
-    # La partie "markdown" n'a plus beaucoup de sens, on renvoie une version texte simple
-    md_output = soup.get_text(separator='\n\n')
+    md_output = _html_to_markdown(final_text_output)
 
     return md_output, final_text_output, "LavaConverter"
