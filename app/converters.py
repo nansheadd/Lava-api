@@ -4,6 +4,7 @@ import io
 import re
 import zipfile
 from typing import Dict, Tuple
+from html import unescape
 
 import mammoth
 from bs4 import BeautifulSoup, NavigableString, FeatureNotFound, Tag
@@ -263,9 +264,7 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
     # Par sécurité, on nettoie les <strong> autour des h2 que Mammoth ajoute parfois
     final_text_output = re.sub(r'<h2><strong>(.*?)</strong></h2>', r'<h2>\1</h2>', final_text_output)
     
-    # On décode les entités HTML comme &apos; en ' pour un texte plus propre
-    # from html import unescape
-    # final_text_output = unescape(final_text_output)
+    final_text_output = unescape(final_text_output)
 
     md_output = _html_to_markdown(final_text_output)
 
