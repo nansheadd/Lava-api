@@ -6,7 +6,7 @@ import zipfile
 from typing import Dict, Tuple
 
 import mammoth
-from bs4 import BeautifulSoup, NavigableString, FeatureNotFound
+from bs4 import BeautifulSoup, NavigableString, FeatureNotFound, Tag
 
 def _extract_notes_from_docx(docx_file: io.BytesIO) -> Dict[str, str]:
     """Extrait les notes depuis word/footnotes.xml ou word/endnotes.xml."""
@@ -30,6 +30,38 @@ def _extract_notes_from_docx(docx_file: io.BytesIO) -> Dict[str, str]:
                         notes[note_id] = re.sub('<[^<]+?>', '', full_text)
     except Exception:
         pass
+    return notes
+
+
+def _collect_notes_from_soup(soup: BeautifulSoup) -> Dict[str, str]:
+    """Récupère le contenu HTML des notes déjà présentes dans la sortie Mammoth."""
+    notes: Dict[str, str] = {}
+    if not soup.body:
+        return notes
+
+    for li in soup.select("li[id^='footnote-'], li[id^='endnote-']"):
+        note_id = li.get("id", "").split("-")[-1]
+        if not note_id:
+            continue
+
+        parts = []
+        for child in li.children:
+            if isinstance(child, NavigableString):
+                text = child.strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(child, Tag):
+                if child.name == "p":
+                    content = child.decode_contents(formatter="html").strip()
+                else:
+                    content = str(child).strip()
+                if content:
+                    parts.append(content)
+
+        html_content = "<br/><br/>".join(parts).strip()
+        if html_content:
+            notes[note_id] = html_content
+
     return notes
 
 def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
@@ -59,19 +91,26 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
         soup = BeautifulSoup(raw_html, "html.parser")
 
     # 3. Remplacement chirurgical des appels de note par le shortcode [note]
-    docx_file.seek(0)
-    notes = _extract_notes_from_docx(docx_file)
+    notes = _collect_notes_from_soup(soup)
+    if not notes:
+        docx_file.seek(0)
+        notes = _extract_notes_from_docx(docx_file)
+    else:
+        docx_file.seek(0)
     if notes:
         for a_tag in soup.find_all("a", id=re.compile(r"^(end|foot)note-ref-\d+$")):
             note_id = a_tag["id"].split("-")[-1]
             note_text = notes.get(note_id)
 
             if note_text:
-                shortcode = NavigableString(f"[note]{note_text}[/note]")
-                if a_tag.parent and a_tag.parent.name == 'sup':
-                    a_tag.parent.replace_with(shortcode)
-                else:
-                    a_tag.replace_with(shortcode)
+                target = a_tag.parent if a_tag.parent and a_tag.parent.name == "sup" else a_tag
+                fragment = BeautifulSoup(f"[note]{note_text}[/note]", "html.parser")
+                new_nodes = list(fragment.contents)
+
+                for new_node in reversed(new_nodes):
+                    target.insert_after(new_node)
+
+                target.decompose()
 
     # ==============================================================================
     # CORRECTION FINALE : Suppression garantie de la liste de notes à la fin
@@ -84,23 +123,19 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str]:
             break # La liste est trouvée et supprimée, on arrête la boucle
 
     # 4. Construction du texte final au format WordPress
-    output_blocks = []
     if soup.body:
-        for element in soup.body.children:
-            if isinstance(element, NavigableString) and not element.strip():
-                continue
+        # Supprime les nœuds vides pour éviter les paragraphes fantômes
+        for element in list(soup.body.children):
+            if isinstance(element, NavigableString):
+                if not element.strip():
+                    element.extract()
+            elif isinstance(element, Tag):
+                if element.name == "p" and not element.get_text(strip=True):
+                    element.decompose()
 
-            if element.name in ['h1', 'h2', 'h3', 'ul', 'ol']:
-                output_blocks.append(str(element))
-            elif element.name == 'p':
-                # On décode le contenu du paragraphe pour garder <strong>, <em> et nos [note]
-                content = element.decode_contents(formatter="html").strip()
-                # On ne garde pas les paragraphes vides
-                if content:
-                    output_blocks.append(content)
-
-    # On assemble le tout, séparé par des doubles sauts de ligne
-    final_text_output = "\n\n".join(output_blocks)
+        final_text_output = soup.body.decode_contents(formatter="html").strip()
+    else:
+        final_text_output = raw_html.strip()
     
     # Par sécurité, on nettoie les <strong> autour des h2 que Mammoth ajoute parfois
     final_text_output = re.sub(r'<h2><strong>(.*?)</strong></h2>', r'<h2>\1</h2>', final_text_output)
