@@ -189,6 +189,40 @@ def _html_to_markdown(html: str) -> str:
     return "\n\n".join(line for line in blocks if line).strip()
 
 
+def _inject_note_shortcodes(html: str, notes: Dict[str, str]) -> str:
+    if not html or not notes:
+        return html
+    wrapper = f"<div>{html}</div>"
+    try:
+        soup = BeautifulSoup(wrapper, "lxml")
+    except FeatureNotFound:
+        soup = BeautifulSoup(wrapper, "html.parser")
+
+    container = soup.find("div")
+    if not container:
+        return html
+
+    note_link_selector = re.compile(r"^(end|foot)note-ref-\d+$")
+
+    for anchor in list(container.find_all("a", id=note_link_selector)):
+        note_id = anchor.get("id", "").split("-")[-1]
+        note_text = notes.get(note_id)
+        if not note_text:
+            continue
+
+        target = anchor
+        while target.parent and target.parent.name == "sup":
+            target = target.parent
+
+        replacement = BeautifulSoup(f"[note]{note_text}[/note]", "html.parser")
+        new_nodes = list(replacement.contents)
+        for new_node in reversed(new_nodes):
+            target.insert_after(new_node)
+        target.decompose()
+
+    return container.decode_contents(formatter="html")
+
+
 def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str, Dict[str, str]]:
     """
     Convertit un .docx en format texte pour l'éditeur WordPress.
@@ -264,6 +298,7 @@ def docx_to_markdown_and_html(docx_bytes: bytes) -> Tuple[str, str, str, Dict[st
     # Par sécurité, on nettoie les <strong> autour des h2 que Mammoth ajoute parfois
     final_text_output = re.sub(r'<h2><strong>(.*?)</strong></h2>', r'<h2>\1</h2>', final_text_output)
     
+    final_text_output = _inject_note_shortcodes(final_text_output, notes_map)
     final_text_output = unescape(final_text_output)
 
     md_output = _html_to_markdown(final_text_output)
